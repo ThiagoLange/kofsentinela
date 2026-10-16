@@ -8,13 +8,15 @@ Poller one-shot (sem daemon próprio) + dashboard HTTP + alertas por regra
 
 ```
 kofsentinela/
-  run.sh                 poll | once | status | ui-build
+  run.sh                 once | poll | serve | all | ui-build
   history.jsonl          (gerado) uma rodada por linha
-  poller/Poller.kf       sondas http|ping|docker + alertas
-  poller/Main.kf         uma rodada: sonda, append, avalia
-  status/Main.kf         daemon kof.web: / (HTML) + /api/status + /api/board + /ui/*
-  ui/Dashboard.kf        dashboard vivo KofJS (poll 10s, 8 slots)
-  ui/ui-dist/            (gerado) bundle JS — commitar? não; rebuild via ui-build
+  app/Poller.kf          sondas http|ping|docker + parsing
+  app/Store.kf           espelho SQLite opcional (SENTINELA_DB)
+  app/Status.kf          rotas kof.web (startStatus)
+  app/Main.kf            despacho SENTINELA_MODE + alertas
+  app/tests/             kof test (4 testes)
+  ui/Dashboard.kf        dashboard vivo KofJS (poll 10s, tabela dinâmica)
+  ui/ui-dist/            (gerado, gitignored) bundle JS
 ```
 
 ## Uso

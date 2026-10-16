@@ -1,10 +1,26 @@
-// poller/Main.kf — uma rodada: sonda alvos, append JSONL, avalia alertas.
+// app/Main.kf — despacho por SENTINELA_MODE: once | serve | all.
 //
-//   cd poller && kof run Main.kf
-//   SENTINELA_TARGETS="kofbox;http;http://localhost:8099/api/health,roteador;ping;192.168.1.1" kof run Main.kf
-// Loop contínuo fica no ../run.sh (sleep do bash; sem depender de sleep() nativo).
+//   once  = uma rodada (cron, --target native; sem scheduler)
+//   serve = só HTTP (precisa de poller externo)
+//   all   = HTTP + polling interno via scheduler.every (JVM; native não tem
+//           event loop — no native use once)
+//   cd app && kof run Main.kf
 
 import java.lang.Exception
+
+envInt(String key, Int fallback): Int {
+    var raw = secrets.get(key, "")
+    if (raw.length == 0) { return fallback }
+    var acc = 0
+    var i = 0
+    while (i < raw.length) {
+        var ch = raw.charAt(i)
+        if (ch < 48 || ch > 57) { return fallback }
+        acc = acc * 10 + (ch - 48)
+        i = i + 1
+    }
+    return acc
+}
 
 runRound(String historyFile, String spec): String {
     var line = "{\"ts\":\"" + time.now().toString() + "\",\"checks\":["
@@ -96,27 +112,6 @@ alertFor(List<String> rounds, String name): String {
     return ""
 }
 
-// flapFor: "FLAPPING" com 3+ transições up<->down nas últimas 10 rodadas.
-flapFor(List<String> rounds, String name): String {
-    var start = rounds.length - 10
-    if (start < 0) { start = 0 }
-    var trans = 0
-    var prev = -1
-    var i = start
-    while (i < rounds.length) {
-        var u = roundUp(rounds.get(i), name)
-        if (u == 0 || u == 1) {
-            if (prev == 0 || prev == 1) {
-                if (u != prev) { trans = trans + 1 }
-            }
-            prev = u
-        }
-        i = i + 1
-    }
-    if (trans >= 3) { return "FLAPPING" }
-    return ""
-}
-
 evaluateAlerts(String historyFile, List<String> names) {
     // Janela de 4 rodadas: trailing conta as últimas 3; a 4ª decide transição.
     var rounds = lastRounds(historyFile, 4)
@@ -138,11 +133,32 @@ evaluateAlerts(String historyFile, List<String> names) {
     }
 }
 
-main() {
+flapFor(List<String> rounds, String name): String {
+    var start = rounds.length - 10
+    if (start < 0) { start = 0 }
+    var trans = 0
+    var prev = -1
+    var i = start
+    while (i < rounds.length) {
+        var u = roundUp(rounds.get(i), name)
+        if (u == 0 || u == 1) {
+            if (prev == 0 || prev == 1) {
+                if (u != prev) { trans = trans + 1 }
+            }
+            prev = u
+        }
+        i = i + 1
+    }
+    if (trans >= 3) { return "FLAPPING" }
+    return ""
+}
+
+doRound(): String {
     var spec = secrets.get("SENTINELA_TARGETS",
         "example;http;https://example.com,localhost;ping;127.0.0.1")
     var historyFile = secrets.get("SENTINELA_HISTORY", "../history.jsonl")
-    runRound(historyFile, spec)
+    var db = secrets.get("SENTINELA_DB", "")
+    var line = runRound(historyFile, spec)
     capHistory(historyFile)
     var names = listOf<String>()
     var specs = spec.split(",")
@@ -154,6 +170,26 @@ main() {
         }
         i = i + 1
     }
+    mirrorToSqlite(db, line, names)
     evaluateAlerts(historyFile, names)
-    println("round ok")
+    return line
+}
+
+main() {
+    var mode = secrets.get("SENTINELA_MODE", "once")
+    if (mode == "serve" || mode == "all") {
+        var port = envInt("STATUS_PORT", 8090)
+        var historyFile = secrets.get("SENTINELA_HISTORY", "../history.jsonl")
+        if (mode == "all") {
+            var secs = envInt("SENTINELA_INTERVAL", 30)
+            var id = scheduler.every(secs * 1000) {
+                doRound()
+            }
+            println("polling interno a cada " + secs.toString() + "s")
+        }
+        startStatus(port, historyFile)
+    } else {
+        doRound()
+        println("round ok")
+    }
 }

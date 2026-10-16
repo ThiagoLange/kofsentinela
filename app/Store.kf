@@ -1,0 +1,65 @@
+// poller/Store.kf — espelho SQLite opcional (via binário sqlite3, padrão KofBox).
+//
+// SENTINELA_DB="" (default) = desligado. Com path, cada rodada insere uma
+// linha por alvo em checks(ts, name, kind, up, ms). Nomes com apóstrofo
+// quebram o INSERT (limitação documentada; alvos são do operador).
+
+// scanAfter: lê até a próxima " (para name/kind) a partir de `from`.
+scanAfter(String line, String key, Int from): String {
+    var i = from
+    while (i + key.length <= line.length) {
+        if (line.substring(i, i + key.length) == key) {
+            var j = i + key.length
+            var s = ""
+            while (j < line.length && line.charAt(j) != 34) {
+                s = s + line.substring(j, j + 1)
+                j = j + 1
+            }
+            return s
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// checkField: campo do check `name` (kind|ms); "" se ausente.
+checkField(String line, String name, String field): String {
+    var key = "\"name\":\"" + name + "\""
+    var i = 0
+    while (i + key.length <= line.length) {
+        if (line.substring(i, i + key.length) == key) {
+            if (field == "kind") { return scanAfter(line, "\"kind\":\"", i) }
+            if (field == "ms") { return scanAfter(line, "\"ms\":\"", i) }
+            var u = roundUp(line, name)
+            if (u < 0) { return "" }
+            return u.toString()
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+mirrorToSqlite(String db, String line, List<String> names) {
+    if (db == "") { return }
+    var ts = scanAfter(line, "\"ts\":\"", 0)
+    var ddl = "CREATE TABLE IF NOT EXISTS checks(ts TEXT,name TEXT,kind TEXT,up INT,ms TEXT);"
+    var r = process.run("sqlite3", db, ddl)
+    if (r.exitCode != 0) {
+        println("sqlite ddl falhou: " + r.stderr)
+        return
+    }
+    var i = 0
+    while (i < names.length) {
+        var up = checkField(line, names.get(i), "up")
+        if (up != "") {
+            var ins = "INSERT INTO checks VALUES('" + ts + "','"
+                + names.get(i) + "','" + checkField(line, names.get(i), "kind")
+                + "'," + up + ",'" + checkField(line, names.get(i), "ms") + "');"
+            var w = process.run("sqlite3", db, ins)
+            if (w.exitCode != 0) {
+                println("sqlite insert falhou: " + w.stderr)
+            }
+        }
+        i = i + 1
+    }
+}

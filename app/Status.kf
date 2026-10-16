@@ -8,19 +8,7 @@
 import java.lang.Exception
 import java.lang.StringBuilder
 
-envInt(String key, Int fallback): Int {
-    var raw = secrets.get(key, "")
-    if (raw.length == 0) { return fallback }
-    var acc = 0
-    var i = 0
-    while (i < raw.length) {
-        var ch = raw.charAt(i)
-        if (ch < 48 || ch > 57) { return fallback }
-        acc = acc * 10 + (ch - 48)
-        i = i + 1
-    }
-    return acc
-}
+// (envInt vive em Main.kf — definição única por módulo.)
 
 lastLine(String path): String {
     var p = Path(path)
@@ -175,9 +163,8 @@ authorized(): Int {
     return 0
 }
 
-main() {
-    var port = envInt("STATUS_PORT", 8090)
-    var historyFile = secrets.get("SENTINELA_HISTORY", "../history.jsonl")
+// startStatus: sobe o daemon (chamado pelo Main por modo).
+startStatus(Int port, String historyFile) {
     println("KofSentinela status em http://localhost:" + port.toString())
     var app = web.app()
     app.get("/") {
