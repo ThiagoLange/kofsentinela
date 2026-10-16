@@ -96,10 +96,32 @@ alertFor(List<String> rounds, String name): String {
     return ""
 }
 
+// flapFor: "FLAPPING" com 3+ transições up<->down nas últimas 10 rodadas.
+flapFor(List<String> rounds, String name): String {
+    var start = rounds.length - 10
+    if (start < 0) { start = 0 }
+    var trans = 0
+    var prev = -1
+    var i = start
+    while (i < rounds.length) {
+        var u = roundUp(rounds.get(i), name)
+        if (u == 0 || u == 1) {
+            if (prev == 0 || prev == 1) {
+                if (u != prev) { trans = trans + 1 }
+            }
+            prev = u
+        }
+        i = i + 1
+    }
+    if (trans >= 3) { return "FLAPPING" }
+    return ""
+}
+
 evaluateAlerts(String historyFile, List<String> names) {
     // Janela de 4 rodadas: trailing conta as últimas 3; a 4ª decide transição.
     var rounds = lastRounds(historyFile, 4)
     if (rounds.length == 0) { return }
+    var wide = lastRounds(historyFile, 10)
     var i = 0
     while (i < names.length) {
         var a = alertFor(rounds, names.get(i))
@@ -108,6 +130,9 @@ evaluateAlerts(String historyFile, List<String> names) {
         }
         if (a == "RECOVERED") {
             println("RECOVERED " + names.get(i) + " UP (voltou a responder)")
+        }
+        if (flapFor(wide, names.get(i)) == "FLAPPING") {
+            println("FLAPPING " + names.get(i) + " (instável: 3+ transições em 10 rodadas)")
         }
         i = i + 1
     }

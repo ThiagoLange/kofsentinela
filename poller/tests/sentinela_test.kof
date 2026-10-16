@@ -46,6 +46,26 @@ trailingFails(List<String> rounds, String name): Int {
 
 // ─── cópia de Main.kf ───
 
+flapFor(List<String> rounds, String name): String {
+    var start = rounds.length - 10
+    if (start < 0) { start = 0 }
+    var trans = 0
+    var prev = -1
+    var i = start
+    while (i < rounds.length) {
+        var u = roundUp(rounds.get(i), name)
+        if (u == 0 || u == 1) {
+            if (prev == 0 || prev == 1) {
+                if (u != prev) { trans = trans + 1 }
+            }
+            prev = u
+        }
+        i = i + 1
+    }
+    if (trans >= 3) { return "FLAPPING" }
+    return ""
+}
+
 alertFor(List<String> rounds, String name): String {
     var f = trailingFails(rounds, name)
     if (f == 3 && (rounds.length < 4 || roundUp(rounds.get(0), name) != 0)) {
@@ -93,11 +113,32 @@ test "trailingFails conta fim" {
     assert(trailingFails(roundsOf("", "", "", ""), "a") == -1, "sem dados")
 }
 
-test "alertFor transições" {
-    assert(alertFor(roundsOf(roundF(), roundF(), roundF(), ""), "a") == "ALERT", "3ª falha alerta")
+test "alertFor transições" {    assert(alertFor(roundsOf(roundF(), roundF(), roundF(), ""), "a") == "ALERT", "3ª falha alerta")
     assert(alertFor(roundsOf(roundF(), roundF(), roundF(), roundF()), "a") == "", "4ª seguida silenciosa")
     assert(alertFor(roundsOf(roundU(), roundF(), roundF(), roundF()), "a") == "ALERT", "transição u,f,f,f")
     assert(alertFor(roundsOf(roundF(), roundU(), roundU(), roundU()), "a") == "RECOVERED", "recuperou")
     assert(alertFor(roundsOf(roundF(), roundF(), roundU(), roundU()), "a") == "", "ainda não é [f,u,u,u]")
     assert(alertFor(roundsOf(roundU(), roundU(), roundU(), roundU()), "a") == "", "tudo up silencioso")
+}
+
+test "flapFor instabilidade" {
+    var flap = listOf<String>()
+    flap.add(roundU())
+    flap.add(roundF())
+    flap.add(roundU())
+    flap.add(roundF())
+    flap.add(roundU())
+    assert(flapFor(flap, "a") == "FLAPPING", "4 transições = flapping")
+    var calm = listOf<String>()
+    calm.add(roundU())
+    calm.add(roundU())
+    calm.add(roundF())
+    calm.add(roundF())
+    calm.add(roundF())
+    assert(flapFor(calm, "a") == "", "1 transição não é flap")
+    var two = listOf<String>()
+    two.add(roundU())
+    two.add(roundF())
+    two.add(roundU())
+    assert(flapFor(two, "a") == "", "2 transições não é flap")
 }
