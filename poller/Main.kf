@@ -1,0 +1,134 @@
+// poller/Main.kf — uma rodada: sonda alvos, append JSONL, avalia alertas.
+//
+//   cd poller && kof run Main.kf
+//   SENTINELA_TARGETS="kofbox;http;http://localhost:8099/api/health,roteador;ping;192.168.1.1" kof run Main.kf
+// Loop contínuo fica no ../run.sh (sleep do bash; sem depender de sleep() nativo).
+
+import java.lang.Exception
+
+runRound(String historyFile, String spec): String {
+    var line = "{\"ts\":\"" + time.now().toString() + "\",\"checks\":["
+    var names = listOf<String>()
+    var specs = spec.split(",")
+    var i = 0
+    var first = 1
+    while (i < specs.length) {
+        if (specs[i] != "") {
+            var c = checkTarget(specs[i])
+            if (first == 0) { line = line + "," }
+            first = 0
+            line = line + checkJson(c)
+            names.add(c.name())
+        }
+        i = i + 1
+    }
+    line = line + "]}"
+    var p = Path(historyFile)
+    if (p.exists()) {
+        p.appendText(line + "\n")
+    } else {
+        p.writeText(line + "\n")
+    }
+    return line
+}
+
+// lastRounds: últimas n linhas não-vazias como List (ordem cronológica).
+lastRounds(String historyFile, Int n): List<String> {
+    var out = listOf<String>()
+    var p = Path(historyFile)
+    if (p.exists()) {
+        var t = p.readText()
+        if (t != null) {
+            var lines = t.split("\n")
+            var kept = listOf<String>()
+            var i = 0
+            while (i < lines.length) {
+                if (lines[i] != "") { kept.add(lines[i]) }
+                i = i + 1
+            }
+            var start = kept.length - n
+            if (start < 0) { start = 0 }
+            var j = start
+            while (j < kept.length) {
+                out.add(kept.get(j))
+                j = j + 1
+            }
+        }
+    }
+    return out
+}
+
+capHistory(String historyFile) {
+    var p = Path(historyFile)
+    if (p.exists()) {
+        var t = p.readText()
+        if (t != null) {
+            var lines = t.split("\n")
+            var kept = listOf<String>()
+            var i = 0
+            while (i < lines.length) {
+                if (lines[i] != "") { kept.add(lines[i]) }
+                i = i + 1
+            }
+            if (kept.length > 500) {
+                var s = ""
+                var j = kept.length - 200
+                while (j < kept.length) {
+                    s = s + kept.get(j) + "\n"
+                    j = j + 1
+                }
+                p.writeText(s)
+            }
+        }
+    }
+}
+
+// alertFor: decisão pura (testável) — "ALERT", "RECOVERED" ou "".
+alertFor(List<String> rounds, String name): String {
+    var f = trailingFails(rounds, name)
+    if (f == 3 && (rounds.length < 4 || roundUp(rounds.get(0), name) != 0)) {
+        return "ALERT"
+    }
+    if (f == 0 && rounds.length == 4 && roundUp(rounds.get(0), name) == 0
+            && roundUp(rounds.get(1), name) != 0) {
+        return "RECOVERED"
+    }
+    return ""
+}
+
+evaluateAlerts(String historyFile, List<String> names) {
+    // Janela de 4 rodadas: trailing conta as últimas 3; a 4ª decide transição.
+    var rounds = lastRounds(historyFile, 4)
+    if (rounds.length == 0) { return }
+    var i = 0
+    while (i < names.length) {
+        var a = alertFor(rounds, names.get(i))
+        if (a == "ALERT") {
+            println("ALERT " + names.get(i) + " DOWN (3 falhas seguidas)")
+        }
+        if (a == "RECOVERED") {
+            println("RECOVERED " + names.get(i) + " UP (voltou a responder)")
+        }
+        i = i + 1
+    }
+}
+
+main() {
+    var spec = secrets.get("SENTINELA_TARGETS",
+        "example;http;https://example.com,localhost;ping;127.0.0.1")
+    var historyFile = secrets.get("SENTINELA_HISTORY", "../history.jsonl")
+    runRound(historyFile, spec)
+    capHistory(historyFile)
+    var names = listOf<String>()
+    var specs = spec.split(",")
+    var i = 0
+    while (i < specs.length) {
+        if (specs[i] != "") {
+            var parts = specs[i].split(";")
+            names.add(parts[0])
+        }
+        i = i + 1
+    }
+    evaluateAlerts(historyFile, names)
+    println("round ok")
+}

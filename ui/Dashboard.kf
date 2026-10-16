@@ -1,0 +1,45 @@
+// ui/Dashboard.kf — dashboard vivo do KofSentinela (KofJS, sem JS escrito).
+//
+// Polling: scheduler.every(10s) + http.get("/api/board") (mesma origem,
+// servido pelo daemon de status) → setRows na tabela (N alvos, sem teto).
+// Formas 0.6.4-safe: Window/Label/Table 2-arg, bind, show, setRows.
+
+refresh(Table tbl, String board): Int {
+    var rows = listOf<List<String>>()
+    var lines = board.split("\n")
+    var i = 0
+    while (i < lines.length) {
+        if (lines[i] != "") {
+            var parts = lines[i].split(";")
+            if (parts.length >= 3) {
+                var st = "DOWN"
+                if (parts[1] == "1") { st = "UP" }
+                rows.add(listOf(parts[0], st, parts[2] + "ms"))
+            }
+        }
+        i = i + 1
+    }
+    tbl.setRows(rows)
+    return rows.length
+}
+
+pollOnce(Table tbl) {
+    var board = http.get("/api/board")
+    refresh(tbl, board)
+}
+
+main() {
+    var w = Window("KofSentinela")
+    var t = Label("KofSentinela — poll 10s")
+    w.bind(t)
+    var tbl = Table(listOf("alvo", "estado", "latência"), listOf<List<String>>())
+    w.bind(tbl)
+    var b = Button("Atualizar agora")
+    b.on("click", () -> { pollOnce(tbl) })
+    w.bind(b)
+    w.show()
+    var id = scheduler.every(10000) {
+        pollOnce(tbl)
+    }
+    println("dashboard no ar")
+}

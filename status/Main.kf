@@ -1,0 +1,208 @@
+// status/Main.kf — daemon HTTP do KofSentinela (padrão kof.web do KofBox).
+//
+//   cd status && kof run Main.kf            (porta 8090; STATUS_PORT muda)
+//   GET /            → tabela HTML (auto-refresh 10s)
+//   GET /api/status  → última rodada (JSON cru)
+// Lê ../history.jsonl (pollers escrevem via run.sh).
+
+import java.lang.Exception
+import java.lang.StringBuilder
+
+envInt(String key, Int fallback): Int {
+    var raw = secrets.get(key, "")
+    if (raw.length == 0) { return fallback }
+    var acc = 0
+    var i = 0
+    while (i < raw.length) {
+        var ch = raw.charAt(i)
+        if (ch < 48 || ch > 57) { return fallback }
+        acc = acc * 10 + (ch - 48)
+        i = i + 1
+    }
+    return acc
+}
+
+lastLine(String path): String {
+    var p = Path(path)
+    if (p.exists()) {
+        var t = p.readText()
+        if (t != null) {
+            var lines = t.split("\n")
+            var i = lines.length - 1
+            while (i >= 0) {
+                if (lines[i] != "") { return lines[i] }
+                i = i - 1
+            }
+        }
+    }
+    return ""
+}
+
+// readQuoted: valor entre aspas após a chave, a partir de `from`.
+readQuoted(String line, String key, Int from): String {
+    var i = from
+    while (i + key.length <= line.length) {
+        if (line.substring(i, i + key.length) == key) {
+            var j = i + key.length
+            var s = ""
+            while (j < line.length && line.charAt(j) != 34) {
+                s = s + line.substring(j, j + 1)
+                j = j + 1
+            }
+            return s
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// tableRows: uma <tr> por check da última rodada (parse posicional).
+tableRows(String line): String {
+    var rows = ""
+    var at = 0
+    var key = "\"name\":\""
+    while (at < line.length) {
+        var j = at
+        var first = -1
+        while (j + key.length <= line.length) {
+            if (line.substring(j, j + key.length) == key) {
+                first = j
+                j = line.length
+            }
+            j = j + 1
+        }
+        if (first < 0) { return rows }
+        var name = readQuoted(line, key, at)
+        if (name == "") { return rows }
+        var ud = "0"
+        var k = first
+        var ukey = "\"up\":"
+        while (k + ukey.length <= line.length) {
+            if (line.substring(k, k + ukey.length) == ukey) {
+                if (line.charAt(k + ukey.length) == 49) { ud = "1" }
+                k = line.length
+            }
+            k = k + 1
+        }
+        var ms = readQuoted(line, "\"ms\":\"", first)
+        var cls = "up"
+        var txt = "UP"
+        if (ud != "1") {
+            cls = "down"
+            txt = "DOWN"
+        }
+        rows = rows + "<tr><td>" + name + "</td><td class=\"" + cls + "\">"
+            + txt + "</td><td>" + ms + " ms</td></tr>"
+        at = first + key.length + name.length + 1
+    }
+    return rows
+}
+
+statusPage(String historyFile): String {
+    var line = lastLine(historyFile)
+    var body = "<p>sem rodadas ainda — rode o poller.</p>"
+    if (line != "") {
+        body = "<table><tr><th>alvo</th><th>estado</th><th>latência</th></tr>"
+            + tableRows(line) + "</table>"
+    }
+    return "<html><head><meta http-equiv=\"refresh\" content=\"10\">"
+        + "<style>body{font-family:sans-serif;margin:2em}"
+        + "table{border-collapse:collapse}td,th{border:1px solid #999;padding:.4em .8em}"
+        + ".up{color:green;font-weight:bold}.down{color:red;font-weight:bold}</style>"
+        + "</head><body><h1>KofSentinela</h1>" + body + "</body></html>"
+}
+
+// boardText: última rodada como linhas "nome;up;ms" (o dashboard KofJS
+// faz split; sem JSON no browser).
+boardText(String line): String {
+    var out = ""
+    var at = 0
+    var key = "\"name\":\""
+    while (at < line.length) {
+        var j = at
+        var first = -1
+        while (j + key.length <= line.length) {
+            if (line.substring(j, j + key.length) == key) {
+                first = j
+                j = line.length
+            }
+            j = j + 1
+        }
+        if (first < 0) { return out }
+        var name = readQuoted(line, key, at)
+        if (name == "") { return out }
+        var ud = "0"
+        var k = first
+        var ukey = "\"up\":"
+        while (k + ukey.length <= line.length) {
+            if (line.substring(k, k + ukey.length) == ukey) {
+                if (line.charAt(k + ukey.length) == 49) { ud = "1" }
+                k = line.length
+            }
+            k = k + 1
+        }
+        var ms = readQuoted(line, "\"ms\":\"", first)
+        out = out + name + ";" + ud + ";" + ms + "\n"
+        at = first + key.length + name.length + 1
+    }
+    return out
+}
+
+// bundle: lê ../ui/ui-dist/<file> (o dashboard é servido na mesma origem;
+// sem CORS, fetch relativo funciona).
+bundle(String file): String {
+    var p = Path("../ui/ui-dist/" + file)
+    if (p.exists()) {
+        var t = p.readText()
+        if (t != null) {
+            return t
+        }
+    }
+    return ""
+}
+
+main() {
+    var port = envInt("STATUS_PORT", 8090)
+    var historyFile = secrets.get("SENTINELA_HISTORY", "../history.jsonl")
+    println("KofSentinela status em http://localhost:" + port.toString())
+    var app = web.app()
+    app.get("/") {
+        log.info("REQ GET /")
+        headerSet("Content-Type", "text/html; charset=utf-8")
+        return statusPage(historyFile)
+    }
+    app.get("/api/status") {
+        log.info("REQ GET /api/status")
+        var line = lastLine(historyFile)
+        if (line == "") {
+            return "{\"status\":\"EMPTY\"}"
+        }
+        return line
+    }
+    app.get("/api/board") {
+        log.info("REQ GET /api/board")
+        headerSet("Content-Type", "text/plain; charset=utf-8")
+        return boardText(lastLine(historyFile))
+    }
+    app.get("/ui") {
+        log.info("REQ GET /ui")
+        headerSet("Content-Type", "text/html; charset=utf-8")
+        return bundle("index.html")
+    }
+    app.get("/ui/Default.mjs") {
+        log.info("REQ GET /ui/Default.mjs")
+        headerSet("Content-Type", "application/javascript; charset=utf-8")
+        return bundle("Default.mjs")
+    }
+    app.get("/ui/kof-runtime.mjs") {
+        log.info("REQ GET /ui/kof-runtime.mjs")
+        headerSet("Content-Type", "application/javascript; charset=utf-8")
+        return bundle("kof-runtime.mjs")
+    }
+    app.get("/ui/kof-runtime-io.mjs") {
+        log.info("REQ GET /ui/kof-runtime-io.mjs")
+        headerSet("Content-Type", "application/javascript; charset=utf-8")
+        return bundle("kof-runtime-io.mjs")
+    }
+    app.listen(port)
+}

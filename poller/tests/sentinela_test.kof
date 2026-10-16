@@ -1,0 +1,103 @@
+// poller/tests/sentinela_test.kf — cópias das funções puras + asserts.
+// Run: kof test tests/sentinela_test.kf (a partir de poller/)
+// Convenção snake-ai: só top-level, sem imports.
+
+// ─── cópias de Poller.kf ───
+
+roundUp(String line, String name): Int {
+    var key = "\"name\":\"" + name + "\""
+    var i = 0
+    var at = -1
+    while (i + key.length <= line.length) {
+        if (line.substring(i, i + key.length) == key) { at = i }
+        i = i + 1
+    }
+    if (at < 0) { return -1 }
+    var ukey = "\"up\":"
+    var j = at
+    while (j + ukey.length <= line.length) {
+        if (line.substring(j, j + ukey.length) == ukey) {
+            var d = line.charAt(j + ukey.length)
+            if (d == 49) { return 1 }
+            return 0
+        }
+        j = j + 1
+    }
+    return -1
+}
+
+trailingFails(List<String> rounds, String name): Int {
+    var fails = 0
+    var i = rounds.length - 1
+    var seen = 0
+    while (i >= 0 && seen < 3) {
+        seen = seen + 1
+        var u = roundUp(rounds.get(i), name)
+        if (u == 0) {
+            fails = fails + 1
+        } else {
+            return fails
+        }
+        i = i - 1
+    }
+    if (seen == 0) { return -1 }
+    return fails
+}
+
+// ─── cópia de Main.kf ───
+
+alertFor(List<String> rounds, String name): String {
+    var f = trailingFails(rounds, name)
+    if (f == 3 && (rounds.length < 4 || roundUp(rounds.get(0), name) != 0)) {
+        return "ALERT"
+    }
+    if (f == 0 && rounds.length == 4 && roundUp(rounds.get(0), name) == 0
+            && roundUp(rounds.get(1), name) != 0) {
+        return "RECOVERED"
+    }
+    return ""
+}
+
+// ─── fixtures ───
+
+roundF(): String {
+    return "{\"ts\":\"1\",\"checks\":[{\"name\":\"a\",\"kind\":\"http\",\"target\":\"u\",\"up\":0,\"ms\":\"5\"}]}"
+}
+
+roundU(): String {
+    return "{\"ts\":\"1\",\"checks\":[{\"name\":\"a\",\"kind\":\"http\",\"target\":\"u\",\"up\":1,\"ms\":\"5\"}]}"
+}
+
+roundsOf(String r0, String r1, String r2, String r3): List<String> {
+    var out = listOf<String>()
+    if (r0 != "") { out.add(r0) }
+    if (r1 != "") { out.add(r1) }
+    if (r2 != "") { out.add(r2) }
+    if (r3 != "") { out.add(r3) }
+    return out
+}
+
+// ─── tests ───
+
+test "roundUp extrai up por nome" {
+    var line = roundF()
+    assert(roundUp(line, "a") == 0, "up 0 do alvo a")
+    assert(roundUp(line, "b") == -1, "ausente dá -1")
+    assert(roundUp(roundU(), "a") == 1, "up 1 do alvo a")
+}
+
+test "trailingFails conta fim" {
+    assert(trailingFails(roundsOf(roundF(), roundF(), roundF(), ""), "a") == 3, "três falhas")
+    assert(trailingFails(roundsOf(roundF(), roundF(), roundU(), ""), "a") == 0, "sucesso zera")
+    assert(trailingFails(roundsOf(roundF(), roundF(), "", ""), "a") == 2, "duas falhas")
+    assert(trailingFails(roundsOf("", "", "", ""), "a") == -1, "sem dados")
+}
+
+test "alertFor transições" {
+    assert(alertFor(roundsOf(roundF(), roundF(), roundF(), ""), "a") == "ALERT", "3ª falha alerta")
+    assert(alertFor(roundsOf(roundF(), roundF(), roundF(), roundF()), "a") == "", "4ª seguida silenciosa")
+    assert(alertFor(roundsOf(roundU(), roundF(), roundF(), roundF()), "a") == "ALERT", "transição u,f,f,f")
+    assert(alertFor(roundsOf(roundF(), roundU(), roundU(), roundU()), "a") == "RECOVERED", "recuperou")
+    assert(alertFor(roundsOf(roundF(), roundF(), roundU(), roundU()), "a") == "", "ainda não é [f,u,u,u]")
+    assert(alertFor(roundsOf(roundU(), roundU(), roundU(), roundU()), "a") == "", "tudo up silencioso")
+}

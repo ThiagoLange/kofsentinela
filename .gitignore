@@ -1,0 +1,4 @@
+history.jsonl
+ui/ui-dist/
+*.log
+.DS_Store
