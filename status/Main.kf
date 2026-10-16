@@ -161,6 +161,20 @@ bundle(String file): String {
     return ""
 }
 
+// Auth opcional (padrão KofBox): SENTINELA_API_KEY vazia = demo local.
+// Com chave: header x-api-key OU ?key= (query cobre o browser, que não
+// manda header; o dashboard KofJS só autentica com auth desligada —
+// config.str resolve em runtime e no browser não há env).
+authorized(): Int {
+    var want = secrets.get("SENTINELA_API_KEY", "")
+    if (want == "") { return 1 }
+    var got = header("x-api-key")
+    if (got != null && got == want) { return 1 }
+    var q = query("key")
+    if (q != null && q == want) { return 1 }
+    return 0
+}
+
 main() {
     var port = envInt("STATUS_PORT", 8090)
     var historyFile = secrets.get("SENTINELA_HISTORY", "../history.jsonl")
@@ -168,11 +182,16 @@ main() {
     var app = web.app()
     app.get("/") {
         log.info("REQ GET /")
+        if (authorized() == 0) {
+            headerSet("Content-Type", "text/html; charset=utf-8")
+            return "<html><body><h1>401</h1><p>x-api-key ausente ou invalida.</p></body></html>"
+        }
         headerSet("Content-Type", "text/html; charset=utf-8")
         return statusPage(historyFile)
     }
     app.get("/api/status") {
         log.info("REQ GET /api/status")
+        if (authorized() == 0) { return "{\"status\":\"UNAUTHORIZED\"}" }
         var line = lastLine(historyFile)
         if (line == "") {
             return "{\"status\":\"EMPTY\"}"
@@ -181,26 +200,34 @@ main() {
     }
     app.get("/api/board") {
         log.info("REQ GET /api/board")
+        if (authorized() == 0) { return "{\"status\":\"UNAUTHORIZED\"}" }
         headerSet("Content-Type", "text/plain; charset=utf-8")
         return boardText(lastLine(historyFile))
     }
     app.get("/ui") {
         log.info("REQ GET /ui")
+        if (authorized() == 0) {
+            headerSet("Content-Type", "text/html; charset=utf-8")
+            return "<html><body><h1>401</h1><p>x-api-key ausente ou invalida.</p></body></html>"
+        }
         headerSet("Content-Type", "text/html; charset=utf-8")
         return bundle("index.html")
     }
     app.get("/ui/Default.mjs") {
         log.info("REQ GET /ui/Default.mjs")
+        if (authorized() == 0) { return "{\"status\":\"UNAUTHORIZED\"}" }
         headerSet("Content-Type", "application/javascript; charset=utf-8")
         return bundle("Default.mjs")
     }
     app.get("/ui/kof-runtime.mjs") {
         log.info("REQ GET /ui/kof-runtime.mjs")
+        if (authorized() == 0) { return "{\"status\":\"UNAUTHORIZED\"}" }
         headerSet("Content-Type", "application/javascript; charset=utf-8")
         return bundle("kof-runtime.mjs")
     }
     app.get("/ui/kof-runtime-io.mjs") {
         log.info("REQ GET /ui/kof-runtime-io.mjs")
+        if (authorized() == 0) { return "{\"status\":\"UNAUTHORIZED\"}" }
         headerSet("Content-Type", "application/javascript; charset=utf-8")
         return bundle("kof-runtime-io.mjs")
     }
