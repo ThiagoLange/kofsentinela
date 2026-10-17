@@ -39,6 +39,48 @@ checkField(String line, String name, String field): String {
     return ""
 }
 
+// toInt: decimal puro; -1 se vazio/não-numérico.
+toInt(String s): Int {
+    var acc = 0
+    var any = 0
+    var i = 0
+    while (i < s.length) {
+        var ch = s.charAt(i)
+        if (ch < 48 || ch > 57) { return -1 }
+        acc = acc * 10 + (ch - 48)
+        any = 1
+        i = i + 1
+    }
+    if (any == 0) { return -1 }
+    return acc
+}
+
+// latencyStats: "p50;p99;n" das últimas `limit` rodadas up=1 de `name`.
+// Sem db ou sem amostras → ";-;0".
+latencyStats(String db, String name, Int limit): String {
+    if (db == "") { return ";-;0" }
+    var vals = listOf<Int>()
+    var sql = "SELECT v FROM (SELECT CAST(ms AS INTEGER) AS v FROM checks"
+        + " WHERE name='" + name + "' AND up=1 ORDER BY ts DESC LIMIT "
+        + limit.toString() + ") ORDER BY v ASC;"
+    var r = process.run("sqlite3", db, sql)
+    if (r.exitCode != 0) { return ";-;0" }
+    var lines = r.stdout.split("\n")
+    var i = 0
+    while (i < lines.length) {
+        if (lines[i] != "") {
+            var v = toInt(lines[i])
+            if (v >= 0) { vals.add(v) }
+        }
+        i = i + 1
+    }
+    var n = vals.length
+    if (n == 0) { return ";-;0" }
+    var p50 = vals.get(n * 50 / 100)
+    var p99 = vals.get(n * 99 / 100)
+    return p50.toString() + ";" + p99.toString() + ";" + n.toString()
+}
+
 mirrorToSqlite(String db, String line, List<String> names) {
     if (db == "") { return }
     var ts = scanAfter(line, "\"ts\":\"", 0)

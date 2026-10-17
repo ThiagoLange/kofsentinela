@@ -180,6 +180,7 @@ main() {
     if (mode == "serve" || mode == "all") {
         var port = envInt("STATUS_PORT", 8090)
         var historyFile = secrets.get("SENTINELA_HISTORY", "../history.jsonl")
+        var db = secrets.get("SENTINELA_DB", "")
         if (mode == "all") {
             var secs = envInt("SENTINELA_INTERVAL", 30)
             var id = scheduler.every(secs * 1000) {
@@ -187,7 +188,7 @@ main() {
             }
             println("polling interno a cada " + secs.toString() + "s")
         }
-        startStatus(port, historyFile)
+        startStatus(port, historyFile, db)
     } else {
         doRound()
         println("round ok")

@@ -136,6 +136,43 @@ boardText(String line): String {
     return out
 }
 
+// namesOf: nomes dos alvos na linha da rodada (ordem original).
+namesOf(String line): List<String> {
+    var out = listOf<String>()
+    var at = 0
+    var key = "\"name\":\""
+    while (at < line.length) {
+        var j = at
+        var first = -1
+        while (j + key.length <= line.length) {
+            if (line.substring(j, j + key.length) == key) {
+                first = j
+                j = line.length
+            }
+            j = j + 1
+        }
+        if (first < 0) { return out }
+        var name = readQuoted(line, key, at)
+        if (name == "") { return out }
+        out.add(name)
+        at = first + key.length + name.length + 1
+    }
+    return out
+}
+
+// latencyBoard: linhas "name;p50;p99;n" (p50/p99 do espelho SQLite).
+latencyBoard(String line, String db): String {
+    var out = ""
+    var names = namesOf(line)
+    var i = 0
+    while (i < names.length) {
+        out = out + names.get(i) + ";" + latencyStats(db, names.get(i), 100)
+            + "\n"
+        i = i + 1
+    }
+    return out
+}
+
 // bundle: lê ../ui/ui-dist/<file> (o dashboard é servido na mesma origem;
 // sem CORS, fetch relativo funciona).
 bundle(String file): String {
@@ -164,7 +201,7 @@ authorized(): Int {
 }
 
 // startStatus: sobe o daemon (chamado pelo Main por modo).
-startStatus(Int port, String historyFile) {
+startStatus(Int port, String historyFile, String db) {
     println("KofSentinela status em http://localhost:" + port.toString())
     var app = web.app()
     app.get("/") {
@@ -190,6 +227,14 @@ startStatus(Int port, String historyFile) {
         if (authorized() == 0) { return "{\"status\":\"UNAUTHORIZED\"}" }
         headerSet("Content-Type", "text/plain; charset=utf-8")
         return boardText(lastLine(historyFile))
+    }
+    app.get("/api/latency") {
+        log.info("REQ GET /api/latency")
+        if (authorized() == 0) { return "{\"status\":\"UNAUTHORIZED\"}" }
+        headerSet("Content-Type", "text/plain; charset=utf-8")
+        var line = lastLine(historyFile)
+        if (line == "") { return "" }
+        return latencyBoard(line, db)
     }
     app.get("/ui") {
         log.info("REQ GET /ui")

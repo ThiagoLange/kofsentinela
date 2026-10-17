@@ -11,8 +11,8 @@ kofsentinela/
   run.sh                 once | poll | serve | all | once-native | poll-native | ui-build
   history.jsonl          (gerado) uma rodada por linha
   app/Poller.kf          sondas http|ping|docker + parsing
-  app/Store.kf           espelho SQLite opcional (SENTINELA_DB)
-  app/Status.kf          rotas kof.web (startStatus)
+  app/Store.kf           espelho SQLite (SENTINELA_DB) + p50/p99 (latencyStats)
+  app/Status.kf          rotas kof.web (startStatus) + /api/latency
   app/Main.kf            despacho SENTINELA_MODE + alertas
   app/tests/             kof test (4 testes)
   native/Main.kf         coletor edge auto-contido (sem kof.web) p/ --target native
@@ -38,6 +38,8 @@ Modos (`SENTINELA_MODE`): `once` (cron/native), `serve`, `all`.
 `all` é um processo só — verificado ao vivo (HTTP + rounds + ALERT).
 Auth: `SENTINELA_API_KEY` (header `x-api-key` ou `?key=`).
 SQLite: `SENTINELA_DB=path.db` (tabela `checks`).
+Latência: `GET /api/latency` → `nome;p50;p99;n` por alvo (das últimas 100
+rodadas `up=1` do `checks`; sem db → `;-;0`).
 
 **Coletor native** (`native/Main.kf`): `app/` é um pacote único e o
 `Status.kf` usa `kof.web` (header/headerSet/query), que o driver native
