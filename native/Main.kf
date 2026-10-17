@@ -1,0 +1,349 @@
+// native/Main.kf — coletor edge auto-contido (poller + store + alerta),
+// sem kof.web, para rodar no target native num Pi.
+//   cd native && kof run Main.kf --target native
+//   SENTINELA_TARGETS="lo;ping;127.0.0.1" SENTINELA_HISTORY=../history.jsonl
+
+import java.lang.Exception
+
+// poller/Poller.kf — sondas + rodada + alertas (KofSentinela M1).
+//
+// Alvos via env SENTINELA_TARGETS:
+//   "nome;kind;alvo,nome;kind;alvo"  (kind: http|ping|docker)
+// Uma rodada = uma linha JSONL em ../history.jsonl (cap 500, mantém 200).
+// Alerta stateless: 3ª falha seguida imprime ALERT; volta a 0 com
+// a 4ª linha limpa imprime RECOVERED (janela de 4 rodadas, sem state file).
+
+
+record ProbeResult(Int up, String ms)
+
+record Check(String name, String kind, String target, Int up, String ms)
+
+checkHttp(String url): ProbeResult {
+    var t0 = time.now()
+    var r = process.run("curl", "-s", "-m", "5", "-o", "/dev/null", "-w", "%{http_code}", url)
+    var ms = (time.now() - t0).toString()
+    if (r.exitCode != 0) { return ProbeResult(0, ms) }
+    if (r.stdout.length == 0) { return ProbeResult(0, ms) }
+    if (r.stdout.charAt(0) == 50) { return ProbeResult(1, ms) }
+    return ProbeResult(0, ms)
+}
+
+checkPing(String host): ProbeResult {
+    var t0 = time.now()
+    var r = process.run("ping", "-c", "1", "-W", "2", host)
+    var ms = (time.now() - t0).toString()
+    if (r.exitCode == 0) { return ProbeResult(1, ms) }
+    return ProbeResult(0, ms)
+}
+
+checkDocker(String name): ProbeResult {
+    var t0 = time.now()
+    var r = process.run("docker", "inspect", name)
+    var ms = (time.now() - t0).toString()
+    if (r.exitCode == 0) { return ProbeResult(1, ms) }
+    return ProbeResult(0, ms)
+}
+
+checkTarget(String spec): Check {
+    var parts = spec.split(";")
+    var name = parts[0]
+    var kind = "unknown"
+    var target = ""
+    if (parts.length > 1) { kind = parts[1] }
+    if (parts.length > 2) { target = parts[2] }
+    var pr = ProbeResult(0, "0")
+    if (kind == "http") { pr = checkHttp(target) }
+    if (kind == "ping") { pr = checkPing(target) }
+    if (kind == "docker") { pr = checkDocker(target) }
+    return Check(name, kind, target, pr.up(), pr.ms())
+}
+
+checkJson(Check c): String {
+    return "{\"name\":\"" + c.name() + "\",\"kind\":\"" + c.kind()
+        + "\",\"target\":\"" + c.target() + "\",\"up\":" + c.up().toString()
+        + ",\"ms\":\"" + c.ms() + "\"}"
+}
+
+// roundUp: up do alvo na linha da rodada; -1 se ausente.
+roundUp(String line, String name): Int {
+    var key = "\"name\":\"" + name + "\""
+    var i = 0
+    var at = -1
+    while (i + key.length <= line.length) {
+        if (line.substring(i, i + key.length) == key) { at = i }
+        i = i + 1
+    }
+    if (at < 0) { return -1 }
+    var ukey = "\"up\":"
+    var j = at
+    while (j + ukey.length <= line.length) {
+        if (line.substring(j, j + ukey.length) == ukey) {
+            var d = line.charAt(j + ukey.length)
+            if (d == 49) { return 1 }
+            return 0
+        }
+        j = j + 1
+    }
+    return -1
+}
+
+// trailingFails: falhas seguidas no fim (máx 3); -1 se sem dados.
+trailingFails(List<String> rounds, String name): Int {
+    var fails = 0
+    var i = rounds.length - 1
+    var seen = 0
+    while (i >= 0 && seen < 3) {
+        seen = seen + 1
+        var u = roundUp(rounds.get(i), name)
+        if (u == 0) {
+            fails = fails + 1
+        } else {
+            return fails
+        }
+        i = i - 1
+    }
+    if (seen == 0) { return -1 }
+    return fails
+}
+
+// poller/Store.kf — espelho SQLite opcional (via binário sqlite3, padrão KofBox).
+//
+// SENTINELA_DB="" (default) = desligado. Com path, cada rodada insere uma
+// linha por alvo em checks(ts, name, kind, up, ms). Nomes com apóstrofo
+// quebram o INSERT (limitação documentada; alvos são do operador).
+
+// scanAfter: lê até a próxima " (para name/kind) a partir de `from`.
+scanAfter(String line, String key, Int from): String {
+    var i = from
+    while (i + key.length <= line.length) {
+        if (line.substring(i, i + key.length) == key) {
+            var j = i + key.length
+            var s = ""
+            while (j < line.length && line.charAt(j) != 34) {
+                s = s + line.substring(j, j + 1)
+                j = j + 1
+            }
+            return s
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// checkField: campo do check `name` (kind|ms); "" se ausente.
+checkField(String line, String name, String field): String {
+    var key = "\"name\":\"" + name + "\""
+    var i = 0
+    while (i + key.length <= line.length) {
+        if (line.substring(i, i + key.length) == key) {
+            if (field == "kind") { return scanAfter(line, "\"kind\":\"", i) }
+            if (field == "ms") { return scanAfter(line, "\"ms\":\"", i) }
+            var u = roundUp(line, name)
+            if (u < 0) { return "" }
+            return u.toString()
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+mirrorToSqlite(String db, String line, List<String> names) {
+    if (db == "") { return }
+    var ts = scanAfter(line, "\"ts\":\"", 0)
+    var ddl = "CREATE TABLE IF NOT EXISTS checks(ts TEXT,name TEXT,kind TEXT,up INT,ms TEXT);"
+    var r = process.run("sqlite3", db, ddl)
+    if (r.exitCode != 0) {
+        println("sqlite ddl falhou: " + r.stderr)
+        return
+    }
+    var i = 0
+    while (i < names.length) {
+        var up = checkField(line, names.get(i), "up")
+        if (up != "") {
+            var ins = "INSERT INTO checks VALUES('" + ts + "','"
+                + names.get(i) + "','" + checkField(line, names.get(i), "kind")
+                + "'," + up + ",'" + checkField(line, names.get(i), "ms") + "');"
+            var w = process.run("sqlite3", db, ins)
+            if (w.exitCode != 0) {
+                println("sqlite insert falhou: " + w.stderr)
+            }
+        }
+        i = i + 1
+    }
+}
+
+// app/Main.kf — despacho por SENTINELA_MODE: once | serve | all.
+//
+//   once  = uma rodada (cron, --target native; sem scheduler)
+//   serve = só HTTP (precisa de poller externo)
+//   all   = HTTP + polling interno via scheduler.every (JVM; native não tem
+//           event loop — no native use once)
+//   cd app && kof run Main.kf
+
+
+envInt(String key, Int fallback): Int {
+    var raw = secrets.get(key, "")
+    if (raw.length == 0) { return fallback }
+    var acc = 0
+    var i = 0
+    while (i < raw.length) {
+        var ch = raw.charAt(i)
+        if (ch < 48 || ch > 57) { return fallback }
+        acc = acc * 10 + (ch - 48)
+        i = i + 1
+    }
+    return acc
+}
+
+runRound(String historyFile, String spec): String {
+    var line = "{\"ts\":\"" + time.now().toString() + "\",\"checks\":["
+    var names = listOf<String>()
+    var specs = spec.split(",")
+    var i = 0
+    var first = 1
+    while (i < specs.length) {
+        if (specs[i] != "") {
+            var c = checkTarget(specs[i])
+            if (first == 0) { line = line + "," }
+            first = 0
+            line = line + checkJson(c)
+            names.add(c.name())
+        }
+        i = i + 1
+    }
+    line = line + "]}"
+    var p = Path(historyFile)
+    if (p.exists()) {
+        p.appendText(line + "\n")
+    } else {
+        p.writeText(line + "\n")
+    }
+    return line
+}
+
+// lastRounds: últimas n linhas não-vazias como List (ordem cronológica).
+lastRounds(String historyFile, Int n): List<String> {
+    var out = listOf<String>()
+    var p = Path(historyFile)
+    if (p.exists()) {
+        var t = p.readText()
+        if (t != null) {
+            var lines = t.split("\n")
+            var kept = listOf<String>()
+            var i = 0
+            while (i < lines.length) {
+                if (lines[i] != "") { kept.add(lines[i]) }
+                i = i + 1
+            }
+            var start = kept.length - n
+            if (start < 0) { start = 0 }
+            var j = start
+            while (j < kept.length) {
+                out.add(kept.get(j))
+                j = j + 1
+            }
+        }
+    }
+    return out
+}
+
+capHistory(String historyFile) {
+    var p = Path(historyFile)
+    if (p.exists()) {
+        var t = p.readText()
+        if (t != null) {
+            var lines = t.split("\n")
+            var kept = listOf<String>()
+            var i = 0
+            while (i < lines.length) {
+                if (lines[i] != "") { kept.add(lines[i]) }
+                i = i + 1
+            }
+            if (kept.length > 500) {
+                var s = ""
+                var j = kept.length - 200
+                while (j < kept.length) {
+                    s = s + kept.get(j) + "\n"
+                    j = j + 1
+                }
+                p.writeText(s)
+            }
+        }
+    }
+}
+
+// alertFor: decisão pura (testável) — "ALERT", "RECOVERED" ou "".
+alertFor(List<String> rounds, String name): String {
+    var f = trailingFails(rounds, name)
+    if (f == 3 && (rounds.length < 4 || roundUp(rounds.get(0), name) != 0)) {
+        return "ALERT"
+    }
+    if (f == 0 && rounds.length == 4 && roundUp(rounds.get(0), name) == 0
+            && roundUp(rounds.get(1), name) != 0) {
+        return "RECOVERED"
+    }
+    return ""
+}
+
+evaluateAlerts(String historyFile, List<String> names) {
+    // Janela de 4 rodadas: trailing conta as últimas 3; a 4ª decide transição.
+    var rounds = lastRounds(historyFile, 4)
+    if (rounds.length == 0) { return }
+    var wide = lastRounds(historyFile, 10)
+    var i = 0
+    while (i < names.length) {
+        var a = alertFor(rounds, names.get(i))
+        if (a == "ALERT") {
+            println("ALERT " + names.get(i) + " DOWN (3 falhas seguidas)")
+        }
+        if (a == "RECOVERED") {
+            println("RECOVERED " + names.get(i) + " UP (voltou a responder)")
+        }
+        if (flapFor(wide, names.get(i)) == "FLAPPING") {
+            println("FLAPPING " + names.get(i) + " (instável: 3+ transições em 10 rodadas)")
+        }
+        i = i + 1
+    }
+}
+
+flapFor(List<String> rounds, String name): String {
+    var start = rounds.length - 10
+    if (start < 0) { start = 0 }
+    var trans = 0
+    var prev = -1
+    var i = start
+    while (i < rounds.length) {
+        var u = roundUp(rounds.get(i), name)
+        if (u == 0 || u == 1) {
+            if (prev == 0 || prev == 1) {
+                if (u != prev) { trans = trans + 1 }
+            }
+            prev = u
+        }
+        i = i + 1
+    }
+    if (trans >= 3) { return "FLAPPING" }
+    return ""
+}
+
+main() {
+    var spec = secrets.get("SENTINELA_TARGETS",
+        "example;http;https://example.com,localhost;ping;127.0.0.1")
+    var historyFile = secrets.get("SENTINELA_HISTORY", "../history.jsonl")
+    var db = secrets.get("SENTINELA_DB", "")
+    var line = runRound(historyFile, spec)
+    capHistory(historyFile)
+    var names = listOf<String>()
+    var specs = spec.split(",")
+    var i = 0
+    while (i < specs.length) {
+        if (specs[i] != "") {
+            var parts = specs[i].split(";")
+            names.add(parts[0])
+        }
+        i = i + 1
+    }
+    mirrorToSqlite(db, line, names)
+    evaluateAlerts(historyFile, names)
+    println("round ok")
+}

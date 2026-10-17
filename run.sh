@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# KofSentinela — ./run.sh once | poll | serve | all | status-legacy | ui-build
+# KofSentinela — ./run.sh once | poll | serve | all | once-native | poll-native | ui-build
 set -e
 cd "$(dirname "$0")"
 
@@ -27,10 +27,20 @@ case "${1:-once}" in
   all)
     cd app && SENTINELA_MODE=all exec kof run Main.kf
     ;;
+  once-native)
+    cd native && exec kof run Main.kf --target native
+    ;;
+  poll-native)
+    cd native
+    while true; do
+      kof run Main.kf --target native || true
+      sleep "$INTERVAL"
+    done
+    ;;
   ui-build)
     cd ui && exec kof build Dashboard.kf --target js --output ui-dist
     ;;
   *)
-    echo "uso: ./run.sh once | poll | serve | all | ui-build" >&2; exit 1
+    echo "uso: ./run.sh once | poll | serve | all | once-native | poll-native | ui-build" >&2; exit 1
     ;;
 esac
